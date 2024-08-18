@@ -1,17 +1,22 @@
 import json
 import os
 import pickle
-import requests
 import uuid
+import logging
+
+import requests
 
 cache = {}
 
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO)
+
 class Game():
-    ENDPOINT='http://www.kruithne.net/where-in-warcraft/endpoint.php'
+    ENDPOINT='https://www.whereinwarcraft.net/endpoint.php'
 
     HEADERS = {
         'Accept': 'application/json',
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
     }
 
     def __init__(self, cache_path, player_name, uid):
@@ -21,10 +26,13 @@ class Game():
         self.player_name = player_name
         self.uid = uid
 
+        self.session = requests.Session()
+
         self.load_cache()
 
     def start(self):
-        r = self._request({'action': 'init', 'mode': 2})
+        logger.info('starting new game')
+        r = self._request({'action': 'init', 'mode': 1})
 
         data = json.loads(r.text)
 
@@ -32,22 +40,33 @@ class Game():
         self.location = data['location']
         self.finish = False
 
-    def guess(self, lat, lon):
+        logger.info(f'token: {self.token}')
+
+    def guess(self):
 
         if self.location in self.cache and not self.finish:
+            logger.debug('cache hit')
             lat = self.cache[self.location]['lat']
             lon = self.cache[self.location]['lon']
+            mid = self.cache[self.location]['mid']
+        else:
+            logger.debug('cache miss')
+            lat = 0
+            lon = 0
+            mid = 0
 
         r = self._request(
             {'action': 'guess',
              'lat': lat,
              'lng': lon,
+             'mapID': mid,
              'token': self.token
             })
 
         data = json.loads(r.text)
 
-        self.cache[self.location] = {'lat': data['lat'], 'lon': data['lng']}
+        self.cache[self.location] = {'lat': data['lat'], 'lon': data['lng'], 'mid': data['mapID']}
+        self.save_cache()
         self.score = data['score']
 
         # When you lose there's no location element.
@@ -60,12 +79,13 @@ class Game():
         return True
 
     def submit(self):
-        r = self._request(
-            {'action': 'submit',
-             'name': self.player_name,
-             'uid': self.uid,
-             'token': self.token
-            })
+        logger.info('submitting disabled')
+        # r = self._request(
+        #     {'action': 'submit',
+        #      'name': self.player_name,
+        #      'uid': self.uid,
+        #      'token': self.token
+        #     })
 
     def end_game(self):
         self.finish = True
@@ -78,19 +98,31 @@ class Game():
         pickle.dump(self.cache, open(self.cache_path, 'wb'))
 
     def _request(self, data):
-        r = requests.post(
-            Game.ENDPOINT,
-            data=json.dumps(data),
-            headers=Game.HEADERS)
+        req_json = json.dumps(data)
 
-        print(r.text)
+        req = requests.Request(
+            method='POST',
+            url=Game.ENDPOINT,
+            headers=Game.HEADERS,
+            data=req_json)
 
-        return r
+        pr = self.session.prepare_request(req)
+
+
+        resp = self.session.send(pr)
+
+        logger.debug('---')
+        logger.debug('request:')
+        logger.debug(resp.request.body)
+        logger.debug('response:')
+        logger.debug(resp.text)
+
+        return resp
 
 
 def main():
     game = Game('cache.p', 'Skynet', uuid.uuid4().hex)
-    print(f'Loaded {len(game.cache)} items from cache')
+    logger.info(f'Loaded {len(game.cache)} items from cache')
 
     high_score = 0
 
@@ -99,7 +131,7 @@ def main():
         last_result = True
         while(last_result):
             try:
-                last_result = game.guess(0, 0)
+                last_result = game.guess()
             except KeyboardInterrupt:
                 game.end_game()
 
@@ -107,7 +139,7 @@ def main():
             game.submit()
             high_score = game.score
 
-        print(f'Max Score: {high_score} Current Score: {game.score}. I have {len(game.cache)} items in the cache now')
+        logger.info(f'Max Score: {high_score} Current Score: {game.score}. I have {len(game.cache)} items in the cache now')
 
         if game.finish:
             break
